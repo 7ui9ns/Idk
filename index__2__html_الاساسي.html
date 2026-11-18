@@ -7998,6 +7998,233 @@ document.addEventListener('click', function(e){
   if(app && window.MutationObserver) new MutationObserver(function(){ el = null; kick(); }).observe(app, {childList:true});
   kick();
 })();
+  /* ===== تفعيل صفحة العمل، السحابة المعدّلة، قيود النشر والتثبيت ===== */
+(function(){
+  if(Array.isArray(NONAV) && NONAV.indexOf('work') < 0) NONAV.push('work');
+  var WK = { data: null, stats: { done: 0, avg: null }, cast: [], loading: false };
+
+  function fetchWorkDetails(item){
+    WK.loading = true; WK.cast = []; WK.stats = { done: 0, avg: null };
+    var q = item.name || '', type = item.type || item.cat || '';
+    var pCast = Promise.resolve([]);
+
+    if(/movie|series|tv|anime|comic|manga|manhwa|manhua/i.test(type)){
+      var gql = 'query($s:String){Media(search:$s){bannerImage description(asHtml:false) characters(perPage:10,sort:ROLE){nodes{name{full}image{large}}} staff(perPage:6){nodes{name{full}image{large}}}}}';
+      pCast = fetch('https://graphql.anilist.co', {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({query: gql, variables:{s: q}})
+      }).then(function(r){ return r.json(); }).then(function(d){
+        var m = d && d.data && d.data.Media;
+        if(!m) return [];
+        if(m.bannerImage && !WK.data.banner) WK.data.banner = m.bannerImage;
+        if(m.description && !WK.data.desc) WK.data.desc = m.description.replace(/<[^>]+>/g,'').slice(0, 280);
+        var people = [];
+        ((m.characters && m.characters.nodes) || []).forEach(function(c){
+          if(c.name) people.push({name: c.name.full, role: L('شخصية','Character'), img: c.image && c.image.large});
+        });
+        ((m.staff && m.staff.nodes) || []).forEach(function(s){
+          if(s.name) people.push({name: s.name.full, role: L('طاقم العمل','Staff'), img: s.image && s.image.large});
+        });
+        return people;
+      }).catch(function(){ return []; });
+    } else if(/song|album|artist|music/i.test(type)){
+      pCast = jsonp('https://api.deezer.com/search?limit=6&output=jsonp&q=' + encodeURIComponent(q))
+        .then(function(d){
+          var seen = {}, out = [];
+          (d.data || []).forEach(function(x){
+            if(x.artist && !seen[x.artist.name]){
+              seen[x.artist.name] = 1;
+              out.push({name: x.artist.name, role: L('فنان','Artist'), img: x.artist.picture_medium || ''});
+            }
+          });
+          return out;
+        }).catch(function(){ return []; });
+    }
+
+    var pStats = (typeof sbc !== 'undefined' && sbc)
+      ? sbc.from('items').select('status,rating').ilike('name', q).then(function(r){
+          var rows = r.data || [], doneCnt = 0, sum = 0, rCnt = 0;
+          rows.forEach(function(x){
+            if(x.status === 'done') doneCnt++;
+            if(x.rating != null && x.rating > 0){ sum += Number(x.rating); rCnt++; }
+          });
+          return { done: doneCnt, avg: rCnt ? (sum / rCnt).toFixed(1) : null };
+        }).catch(function(){ return { done: 0, avg: null }; })
+      : Promise.resolve({ done: 0, avg: null });
+
+    Promise.all([pCast, pStats]).then(function(res){
+      WK.cast = res[0] || [];
+      WK.stats = res[1] || { done: 0, avg: null };
+      WK.loading = false;
+      if(view === 'work') render();
+    });
+  }
+
+  window.openWorkPage = function(workObj){
+    WK.data = Object.assign({name:'', img:'', banner:'', desc:'', cat:'movies', type:'movies'}, workObj);
+    pgBack = view;
+    view = 'work';
+    render();
+    window.scrollTo(0, 0);
+    fetchWorkDetails(WK.data);
+  };
+
+  window.viewWork = function(){
+    var w = WK.data || {};
+    var existing = state.items.find(function(x){ return normT(x.name) === normT(w.name); });
+    var bannerStyle = (w.banner || w.img) ? bgUrl(w.banner || w.img) : '';
+    var castHTML = WK.cast.length
+      ? '<div class="sec-h"><h2>' + L('المشاركون في العمل','Cast & Artists') + '</h2></div>' +
+        '<div class="rail">' + WK.cast.map(function(p){
+          return '<div class="rc" style="width:82px;align-items:center;text-align:center">' +
+            '<div class="av" style="width:68px;height:68px;font-size:20px;' + (p.img ? bgUrl(p.img) : '') + '">' + (p.img ? '' : esc((p.name||'?')[0])) + '</div>' +
+            '<div class="rn" style="font-size:12px">' + esc(p.name) + '</div>' +
+            '<div class="rs" style="font-size:11px">' + esc(p.role) + '</div></div>';
+        }).join('') + '</div>'
+      : '';
+
+    return '<div class="pbn" style="' + bannerStyle + '"><button class="pbk bk" data-act="page-back" aria-label="رجوع">' + svg('back',20) + '</button></div>' +
+      '<div style="display:flex;gap:14px;align-items:flex-end;margin-top:-36px;position:relative;z-index:2;padding:0 4px">' +
+        '<div class="poster' + (w.img ? '' : ' ph') + '" style="width:104px;flex:none;box-shadow:var(--shadow);' + (w.img ? bgUrl(w.img) : '') + '">' + (w.img ? '' : svg('film',28)) + '</div>' +
+        '<div style="flex:1;min-width:0;padding-bottom:4px">' +
+          '<h1 style="margin:0;font-size:22px;font-weight:800;line-height:1.3" dir="auto">' + esc(w.name) + '</h1>' +
+          '<div class="sub" style="margin-top:4px">' + esc(w.sub || (catById(w.cat) && catById(w.cat).name) || '') + '</div>' +
+        '</div>' +
+      '</div>' +
+      (w.desc ? '<p class="note" style="margin:14px 2px;font-size:14px;line-height:1.7" dir="auto">' + esc(w.desc) + '</p>' : '') +
+      '<div class="stats" style="grid-template-columns:repeat(2,1fr);margin:16px 0">' +
+        '<div class="st"><b>' + WK.stats.done + '</b><span>' + L('أنهوا هذا العمل','Completed by') + '</span></div>' +
+        '<div class="st"><b>' + (WK.stats.avg || '—') + '</b><span>' + L('متوسط التقييم','Average rating') + '</span></div>' +
+      '</div>' +
+      '<button class="btn" data-act="work-open-sheet" style="width:100%;height:54px;font-size:17px;border-radius:16px;margin:6px 0 14px">' +
+        svg('plus',20,2.2) + '<span>' + (existing ? L('تعديل في مكتبتي','Edit in library') : 'Add') + '</span>' +
+      '</button>' + castHTML;
+  };
+
+  var _origRender = render;
+  render = function(){
+    if(view === 'work'){
+      applyTheme();
+      app.innerHTML = viewWork();
+      nav.hidden = true;
+      return;
+    }
+    _origRender();
+  };
+
+  /* استبدال النقر على نتائج البحث لفتح صفحة العمل */
+  document.addEventListener('click', function(e){
+    var t = e.target.closest('[data-act]');
+    if(!t) return;
+    var a = t.dataset.act;
+    if(a === 'disc-pick'){
+      e.stopImmediatePropagation();
+      var ty = t.dataset.t, rr = dRes[ty] && dRes[ty].list[+t.dataset.i];
+      if(!rr) return;
+      var dcat = ty === 'wiki' ? curCat() : (catById(TYPE_CAT[ty]) || curCat());
+      openWorkPage({cat: dcat.id, type: ty, name: rr.title, sub: rr.sub || '', img: imgSafe(rr.img || '')});
+    } else if(a === 'work-open-sheet'){
+      var w = WK.data || {};
+      var ex = state.items.find(function(x){ return normT(x.name) === normT(w.name); });
+      openItem(ex ? ex.id : null, {cat: w.cat, name: w.name, img: w.img, src: true, srcName: w.name});
+    } else if(a === 'item-lists-pick'){
+      var html = '<h3>' + L('إضافة إلى قائمة','Add to list') + '</h3>' +
+        (state.lists.length
+          ? state.lists.map(function(l){
+              var on = draft && draft.lists.indexOf(l.id) > -1;
+              return '<button class="opt' + (on ? ' on' : '') + '" data-act="tog-list-sub" data-id="' + l.id + '" style="margin-bottom:8px">' +
+                '<span class="ot"><b>' + esc(l.name) + '</b><small>' + l.ids.length + ' ' + L('عنصر','items') + '</small></span>' +
+                '<span class="rd">' + (on ? '✓' : '') + '</span></button>';
+            }).join('')
+          : '<div class="empty"><b>' + L('لا توجد قوائم','No lists yet') + '</b></div>') +
+        '<div class="acts"><button class="btn" data-act="back-to-item">' + L('تم','Done') + '</button></div>';
+      openSheet(html);
+    } else if(a === 'tog-list-sub'){
+      var lid = t.dataset.id;
+      if(draft){
+        var ix = draft.lists.indexOf(lid);
+        if(ix > -1) draft.lists.splice(ix, 1); else draft.lists.push(lid);
+        t.classList.toggle('on');
+        t.querySelector('.rd').textContent = draft.lists.indexOf(lid) > -1 ? '✓' : '';
+      }
+    } else if(a === 'back-to-item'){
+      openItem(draft.id, draft);
+    } else if(a === 'item-write-post'){
+      var curDraft = Object.assign({}, draft);
+      if(!curDraft.id){
+        var newId = uid();
+        state.items.push({id: newId, added: Date.now(), name: curDraft.name || $('#f-name').value.trim(), cat: curDraft.cat, img: curDraft.img, rating: curDraft.rating, status: curDraft.status, date: ''});
+        save();
+        curDraft.id = newId;
+      }
+      FD.quote = curDraft.id;
+      FD.qlist = null;
+      composeSheet();
+    } else if(a === 'post-pin'){
+      var pid = t.dataset.id;
+      state.pinnedPosts = state.pinnedPosts || [];
+      var idx = state.pinnedPosts.indexOf(pid);
+      if(idx > -1) state.pinnedPosts.splice(idx, 1); else state.pinnedPosts.unshift(pid);
+      save(); closeSheet(); render(); toast(idx > -1 ? L('تم إلغاء التثبيت','Unpinned') : L('تم تثبيت المنشور','Post pinned'));
+    }
+  }, true);
+
+  /* تعديل السحابة: إزالة النوت وإضافة زر القوائم وزر Write a post */
+  var _origOpenItem = openItem;
+  openItem = function(id, pre){
+    _origOpenItem(id, pre);
+    var nw = $('#f-note-w');
+    if(nw){
+      nw.hidden = false;
+      nw.innerHTML =
+        '<div class="acts" style="margin-bottom:8px">' +
+          '<button type="button" class="btn line" data-act="item-lists-pick">' + svg('list',18) + '<span>' + L('إضافة لقائمة','Add to list') + (draft.lists.length ? ' (' + draft.lists.length + ')' : '') + '</span></button>' +
+          '<button type="button" class="btn line" data-act="item-write-post">' + svg('pen',18) + '<span>Write a post</span></button>' +
+        '</div>';
+    }
+  };
+
+  /* تقييد المنشورات بعمل أو قائمة + إضافة خيار الخصوصية */
+  var _origCompose = composeSheet;
+  composeSheet = function(){
+    if(!FD.quote && !FD.qlist){
+      toast(L('يجب اختيار عمل أو قائمة أولاً لكتابة منشور','Select a work or list first to write a post'));
+      return;
+    }
+    _origCompose();
+    var cmpf = document.querySelector('.cmpf');
+    if(cmpf){
+      var visHTML = '<div class="seg wide" style="margin:10px 0">' +
+        [['public', L('للجميع','Public')], ['friends', L('الأصدقاء','Friends')], ['private', L('خاص','Private')]].map(function(v, i){
+          return '<button type="button" class="' + (i===0?'on':'') + '" data-act="set-pvis" data-v="' + v[0] + '">' + v[1] + '</button>';
+        }).join('') + '</div>';
+      cmpf.insertAdjacentHTML('beforebegin', visHTML);
+    }
+  };
+
+  document.addEventListener('click', function(e){
+    var b = e.target.closest('[data-act="set-pvis"]');
+    if(b){
+      b.parentNode.querySelectorAll('button').forEach(function(x){ x.classList.remove('on'); });
+      b.classList.add('on');
+      FD.postVis = b.dataset.v;
+    }
+  });
+
+  var _origPostMenu = postMenu;
+  postMenu = function(id){
+    _origPostMenu(id);
+    var p = findPost(id);
+    if(p && p.user_id === CL.uid){
+      var acts = layer.querySelector('.acts');
+      var pinned = (state.pinnedPosts || []).indexOf(id) > -1;
+      if(acts) acts.insertAdjacentHTML('afterbegin',
+        '<button class="btn line" data-act="post-pin" data-id="' + esc(id) + '">' +
+        (pinned ? L('إلغاء تثبيت المنشور','Unpin post') : L('تثبيت المنشور','Pin post')) + '</button>');
+    }
+  };
+})();
+                                    
 </script>
 </body>
 </html>
